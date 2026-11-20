@@ -53,7 +53,7 @@ workspace file operations.
 Start the interactive CLI from the repository root:
 
 ```powershell
-uv run python main.py
+uv run agent
 ```
 
 Choose an option from the menu:
@@ -84,6 +84,28 @@ terminal.
 File read and write tools are restricted to the `workspace/` directory. The
 agent uses the Gemini `gemini-3.5-flash-lite` model; web search and webpage
 fetching require an internet connection.
+
+## Project layout
+
+```text
+src/agent/
+  app.py              # interactive menu (entry point: `uv run agent`)
+  core/
+    config.py         # env, model, system instruction, workspace path
+    llm.py            # Gemini client, retrying tool call, structured output
+    errors.py         # AgentExecutionError
+    tool_registry.py  # Tool, ToolContext, ToolRegistry
+  features/
+    chat/             # short-term session + ReAct loop
+    planning/         # plan generation and sequential execution
+    memory/           # SQLite store, extraction, retrieval, viewing
+    tools/            # one file per tool, each exporting TOOL
+```
+
+To add a tool, create `features/tools/<name>.py` exporting
+`TOOL = Tool(declaration=..., handler=...)`, where the handler is called as
+`handler(ctx, **args)` with `ctx.memory_store` available, then add it to the
+registry list in `features/tools/__init__.py`.
 
 ## Local data
 
