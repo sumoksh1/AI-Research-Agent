@@ -1,60 +1,19 @@
-import os
 import re
-import time
 import sqlite3
 
-from pathlib import Path
 from typing import List
 
 import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
-from dotenv import load_dotenv
 
-from google import genai
-from google.genai import types, errors
+from google.genai import types
 
 from pydantic import BaseModel
 
-# ==========================================
-# 1. INITIALIZE ENVIRONMENT AND GEMINI
-# ==========================================
-
-load_dotenv()
-
-api_key = os.getenv("GEMINI_API_KEY")
-
-if not api_key:
-    raise ValueError("GEMINI_API_KEY not found in .env file")
-
-client = genai.Client(api_key=api_key)
-
-MODEL = "gemini-3.5-flash-lite"
-
-SYSTEM_INSTRUCTION = """
-You are a helpful research and coding assistant.
-
-Follow the ReAct pattern:
-
-1. Briefly explain the next action when useful.
-2. Select an appropriate available tool.
-3. Examine the result returned by the tool.
-4. Adapt your next action based on the observation.
-5. Continue until the task is complete.
-
-Do not invent tool results.
-
-If a tool fails, examine the error and decide
-how to proceed.
-
-Do not call tools unnecessarily.
-
-When finished, provide a clear final answer.
-"""
-
-WORKSPACE = Path("workspace").resolve()
-
-WORKSPACE.mkdir(parents=True, exist_ok=True)
+from agent.core.config import WORKSPACE
+from agent.core.errors import AgentExecutionError
+from agent.core.llm import call_gemini, generate_structured
 
 
 # ==========================================
@@ -275,16 +234,6 @@ class MemoryStore:
             )
 
             return cursor.fetchall()
-
-
-# ==========================================
-# 5. CUSTOM EXCEPTION
-# ==========================================
-
-
-class AgentExecutionError(Exception):
-
-    pass
 
 
 # ==========================================
@@ -519,54 +468,6 @@ tools = [
 
 
 # ==========================================
-# 9. GEMINI API CALL WITH RETRIES
-# ==========================================
-
-
-def call_gemini(messages):
-
-    max_retries = 3
-
-    for attempt in range(max_retries):
-
-        try:
-
-            print(f"Calling Gemini (attempt {attempt + 1})...")
-
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=messages,
-                config=types.GenerateContentConfig(
-                    tools=tools,
-                    max_output_tokens=2000,
-                    system_instruction=SYSTEM_INSTRUCTION,
-                ),
-            )
-
-            return response
-
-        except errors.APIError as e:
-
-            if e.code not in (429, 500, 502, 503, 504):
-
-                raise
-
-            print("Temporary API error:", e)
-
-            if attempt == max_retries - 1:
-
-                raise
-
-            wait_time = 2**attempt
-
-            print(f"Retrying in {wait_time} seconds...")
-
-            time.sleep(wait_time)
-
-    raise RuntimeError("Gemini API failed after retries")
-
-
-# ==========================================
 # 10. LONG-TERM MEMORY EXTRACTION
 # ==========================================
 
@@ -611,19 +512,13 @@ def extract_memories(user_message):
 
     """
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=MemoryExtraction
-        ),
-    )
+    parsed = generate_structured(prompt, MemoryExtraction)
 
-    if response.parsed is None:
+    if parsed is None:
 
         return []
 
-    return response.parsed.facts
+    return parsed.facts
 
 
 # ==========================================
@@ -735,7 +630,7 @@ def run_agent(user_msg, session, memory_store, remember=True):
 
         try:
 
-            response = call_gemini(messages)
+            response = call_gemini(messages, tools)
 
         except Exception as e:
 
@@ -870,19 +765,11 @@ def create_plan(user_request):
 
     """
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=planning_prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=Plan
-        ),
-    )
+    plan = generate_structured(planning_prompt, Plan)
 
-    if response.parsed is None:
+    if plan is None:
 
         raise ValueError("Gemini did not return a valid plan.")
-
-    plan = response.parsed
 
     if not plan.tasks:
 

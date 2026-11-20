@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from agent!")
+"""AI research agent package. The CLI entry point lives in agent.app."""

@@ -1,0 +1,3 @@
+class AgentExecutionError(Exception):
+
+    pass
