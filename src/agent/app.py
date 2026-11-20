@@ -3,17 +3,14 @@ import sqlite3
 
 from typing import List
 
-import requests
-from bs4 import BeautifulSoup
-from ddgs import DDGS
-
 from google.genai import types
 
 from pydantic import BaseModel
 
-from agent.core.config import WORKSPACE
 from agent.core.errors import AgentExecutionError
 from agent.core.llm import call_gemini, generate_structured
+from agent.core.tool_registry import ToolContext
+from agent.features.tools import registry
 
 
 # ==========================================
@@ -237,237 +234,6 @@ class MemoryStore:
 
 
 # ==========================================
-# 6. DEFINE PYTHON TOOLS
-# ==========================================
-
-
-# TOOL 1: CALCULATOR
-
-
-def calculator(expression: str):
-
-    # Learning-only implementation.
-    # eval() is not safe for untrusted input
-    # in production.
-
-    return eval(expression, {"__builtins__": {}}, {})
-
-
-# TOOL 2: WEB SEARCH
-
-
-def web_search(query: str):
-
-    results = DDGS().text(query, max_results=5)
-
-    output = []
-
-    for item in results:
-
-        output.append(
-            {
-                "title": item.get("title"),
-                "url": item.get("href"),
-                "snippet": item.get("body"),
-            }
-        )
-
-    return output
-
-
-# HELPER: SAFE WORKSPACE PATH
-
-
-def safe_workspace_path(path: str):
-
-    file_path = (WORKSPACE / path).resolve()
-
-    if not file_path.is_relative_to(WORKSPACE):
-
-        raise ValueError("Access outside workspace is not allowed.")
-
-    return file_path
-
-
-# TOOL 3: READ FILE
-
-
-def read_file(path: str):
-
-    file_path = safe_workspace_path(path)
-
-    if not file_path.is_file():
-
-        raise FileNotFoundError(f"File not found: {path}")
-
-    content = file_path.read_text(encoding="utf-8")
-
-    return content[:20000]
-
-
-# TOOL 4: WRITE FILE
-
-
-def write_file(path: str, content: str):
-
-    file_path = safe_workspace_path(path)
-
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Validate again after creating directories.
-    file_path = safe_workspace_path(path)
-
-    file_path.write_text(content, encoding="utf-8")
-
-    return f"Successfully saved file: {path}"
-
-
-# TOOL 5: FETCH WEBPAGE
-
-
-def fetch_page(url: str):
-
-    if not url.startswith(("http://", "https://")):
-
-        raise ValueError("Only HTTP and HTTPS URLs are allowed.")
-
-    response = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # Remove unnecessary HTML elements.
-
-    for element in soup(["script", "style", "nav", "footer", "header"]):
-
-        element.decompose()
-
-    text = soup.get_text(separator=" ", strip=True)
-
-    return text[:5000]
-
-
-def find_memory(memory_store, keyword):
-    return memory_store.find(keyword)
-
-
-def delete_memory(memory_store, memory_id: int):
-    memory_store.delete(memory_id)
-    return f"Memory {memory_id} deleted successfully."
-
-
-# ==========================================
-# 7. MAP TOOL NAMES TO PYTHON FUNCTIONS
-# ==========================================
-
-TOOL_FUNCS = {
-    "calculator": calculator,
-    "web_search": web_search,
-    "read_file": read_file,
-    "write_file": write_file,
-    "fetch_page": fetch_page,
-    "delete_memory": delete_memory,
-    "find_memory": find_memory,
-}
-
-
-# ==========================================
-# 8. DECLARE TOOLS TO GEMINI
-# ==========================================
-
-tools = [
-    types.Tool(
-        function_declarations=[
-            # CALCULATOR
-            types.FunctionDeclaration(
-                name="calculator",
-                description="Evaluate mathematical expressions.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={"expression": types.Schema(type=types.Type.STRING)},
-                    required=["expression"],
-                ),
-            ),
-            # WEB SEARCH
-            types.FunctionDeclaration(
-                name="web_search",
-                description="Search the internet and return relevant results.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={"query": types.Schema(type=types.Type.STRING)},
-                    required=["query"],
-                ),
-            ),
-            # READ FILE
-            types.FunctionDeclaration(
-                name="read_file",
-                description="Read a text file inside the workspace folder.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={"path": types.Schema(type=types.Type.STRING)},
-                    required=["path"],
-                ),
-            ),
-            # WRITE FILE
-            types.FunctionDeclaration(
-                name="write_file",
-                description="Create or overwrite a text file inside workspace.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={
-                        "path": types.Schema(type=types.Type.STRING),
-                        "content": types.Schema(type=types.Type.STRING),
-                    },
-                    required=["path", "content"],
-                ),
-            ),
-            # FETCH WEBPAGE
-            types.FunctionDeclaration(
-                name="fetch_page",
-                description="Fetch a webpage and extract readable text.",
-                parameters=types.Schema(
-                    type=types.Type.OBJECT,
-                    properties={"url": types.Schema(type=types.Type.STRING)},
-                    required=["url"],
-                ),
-            ),
-            # Find from long-term memory
-            types.FunctionDeclaration(
-                name="find_memory",
-                description="Search long-term memories using a keyword.",
-                parameters={
-                    "type": "OBJECT",
-                    "properties": {
-                        "keyword": {
-                            "type": "STRING",
-                            "description": "The keyword to search for in saved memories.",
-                        }
-                    },
-                    "required": ["keyword"],
-                },
-            ),
-            # delete from long memory
-            types.FunctionDeclaration(
-                name="delete_memory",
-                description="Delete a saved long-term memory using its database ID.",
-                parameters={
-                    "type": "OBJECT",
-                    "properties": {
-                        "memory_id": {
-                            "type": "INTEGER",
-                            "description": "The ID of the memory to delete.",
-                        }
-                    },
-                    "required": ["memory_id"],
-                },
-            ),
-        ]
-    )
-]
-
-
-# ==========================================
 # 10. LONG-TERM MEMORY EXTRACTION
 # ==========================================
 
@@ -618,6 +384,8 @@ def run_agent(user_msg, session, memory_store, remember=True):
 
     messages = session.messages
 
+    tool_context = ToolContext(memory_store=memory_store)
+
     # --------------------------------------
     # REACT AGENT LOOP
     # --------------------------------------
@@ -630,7 +398,7 @@ def run_agent(user_msg, session, memory_store, remember=True):
 
         try:
 
-            response = call_gemini(messages, tools)
+            response = call_gemini(messages, registry.gemini_tools())
 
         except Exception as e:
 
@@ -701,14 +469,7 @@ def run_agent(user_msg, session, memory_store, remember=True):
 
             try:
 
-                if function_name not in TOOL_FUNCS:
-
-                    raise ValueError(f"Unknown tool: {function_name}")
-
-                if function_name == "delete_memory":
-                    result = delete_memory(memory_store, **function_args)
-                else:
-                    result = TOOL_FUNCS[function_name](**function_args)
+                result = registry.execute(function_name, function_args, tool_context)
 
                 is_error = False
 
